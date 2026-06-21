@@ -17,6 +17,8 @@
             :key="t.id"
             :trainee="t"
             :score="calcScore(t)"
+            :relationships="state.relationships"
+            :all-trainees="state.trainees"
           />
         </div>
       </aside>

@@ -44,6 +44,7 @@ function createTrainee(name, index) {
     poachResist: randInt(40, 70),
     fans: 0,
     singlesReleased: 0,
+    statsHistory: [{ day: 1, stats: { ...stats } }],
   }
 }
 
@@ -267,6 +268,20 @@ export function processDay(state) {
 
   const newDay = state.day + 1
   const pendingRating = state.day % CFG.rating.interval === 0
+
+  if (pendingRating) {
+    for (const trainee of trainees) {
+      if (trainee.status !== 'left') {
+        trainee.statsHistory.push({
+          day: state.day,
+          stats: { ...trainee.stats },
+        })
+        if (trainee.statsHistory.length > 8) {
+          trainee.statsHistory.shift()
+        }
+      }
+    }
+  }
 
   let pendingEvent = null
   if (Math.random() < CFG.events.dailyChance) {
@@ -543,6 +558,150 @@ export function releaseSingle(state, groupId) {
     sales,
     revenue,
   }
+}
+
+export function getGrowthTrend(trainee) {
+  const history = trainee.statsHistory || []
+  if (history.length < 2) {
+    return { overall: 'stable', stats: {}, changes: {} }
+  }
+
+  const latest = history[history.length - 1].stats
+  const previous = history[0].stats
+  const changes = {}
+  const statTrends = {}
+
+  for (const key of CFG.stats) {
+    const diff = latest[key] - previous[key]
+    changes[key] = diff
+    if (diff >= 3) {
+      statTrends[key] = 'up'
+    } else if (diff <= -2) {
+      statTrends[key] = 'down'
+    } else {
+      statTrends[key] = 'stable'
+    }
+  }
+
+  const totalChange = Object.values(changes).reduce((a, b) => a + b, 0)
+  let overall = 'stable'
+  if (totalChange >= 8) overall = 'fast'
+  else if (totalChange >= 3) overall = 'up'
+  else if (totalChange <= -3) overall = 'down'
+
+  return { overall, stats: statTrends, changes }
+}
+
+export function getStressSources(trainee, relationships, allTrainees) {
+  const sources = []
+
+  if (trainee.stress >= CFG.thresholds.stressBreakdown) {
+    sources.push({ type: 'critical', label: '濒临崩溃', desc: '压力极高，需立即休息调整' })
+  } else if (trainee.stress >= CFG.thresholds.stressHigh) {
+    sources.push({ type: 'high', label: '压力偏高', desc: '持续高压会影响训练效果' })
+  }
+
+  if (trainee.fatigue >= CFG.thresholds.fatigueExhausted) {
+    sources.push({ type: 'fatigue', label: '疲劳积累', desc: '身体疲劳加重心理负担' })
+  }
+
+  if (allTrainees && relationships) {
+    const others = allTrainees.filter((t) => t.id !== trainee.id && t.status !== 'left')
+    let competitionCount = 0
+    for (const other of others) {
+      const rel = getRelationship(relationships, trainee.id, other.id)
+      if (rel <= CFG.relationships.competitionThreshold) {
+        competitionCount++
+      }
+    }
+    if (competitionCount > 0) {
+      sources.push({ type: 'competition', label: '竞争压力', desc: `与 ${competitionCount} 位练习生关系紧张` })
+    }
+  }
+
+  if (trainee.illnessDays > 0) {
+    sources.push({ type: 'illness', label: '身体不适', desc: '生病期间压力会持续上升' })
+  }
+
+  if (sources.length === 0) {
+    sources.push({ type: 'good', label: '状态良好', desc: '当前压力水平健康' })
+  }
+
+  return sources
+}
+
+export function getTrainingSuggestions(trainee) {
+  const suggestions = []
+
+  if (trainee.fatigue >= CFG.thresholds.fatigueCollapse - 10) {
+    suggestions.push({ type: 'rest', priority: 'high', label: '急需休息', desc: '疲劳过高，建议安排休息恢复' })
+  } else if (trainee.fatigue >= CFG.thresholds.fatigueExhausted) {
+    suggestions.push({ type: 'rest', priority: 'medium', label: '注意休息', desc: '疲劳偏高，训练效率会下降' })
+  }
+
+  if (trainee.stress >= CFG.thresholds.stressBreakdown - 10) {
+    suggestions.push({ type: 'stress', priority: 'high', label: '减压优先', desc: '压力濒临崩溃，需立即调整' })
+  } else if (trainee.stress >= CFG.thresholds.stressHigh) {
+    suggestions.push({ type: 'stress', priority: 'medium', label: '适当减压', desc: '压力偏高，可安排体能训练或休息' })
+  }
+
+  if (trainee.illnessDays > 0) {
+    suggestions.push({ type: 'illness', priority: 'high', label: '安心休养', desc: '身体不适时强行训练会适得其反' })
+  }
+
+  if (suggestions.length === 0 || suggestions.every((s) => s.priority !== 'high')) {
+    const stats = trainee.stats
+    const statEntries = Object.entries(stats)
+    statEntries.sort((a, b) => a[1] - b[1])
+    const weakest = statEntries[0]
+    const secondWeakest = statEntries[1]
+
+    if (weakest[1] < 50) {
+      suggestions.push({
+        type: 'training',
+        priority: 'high',
+        label: `强化${CFG.statLabels[weakest[0]]}`,
+        desc: `${CFG.statLabels[weakest[0]]}是最大短板，建议重点训练`,
+      })
+    }
+
+    if (secondWeakest[1] < 55) {
+      suggestions.push({
+        type: 'training',
+        priority: 'medium',
+        label: `提升${CFG.statLabels[secondWeakest[0]]}`,
+        desc: `${CFG.statLabels[secondWeakest[0]]}也有较大提升空间`,
+      })
+    }
+
+    const score = calcTraineeScore(trainee)
+    if (score >= CFG.rating.debutScoreThreshold - 5 && score < CFG.rating.debutScoreThreshold) {
+      suggestions.push({
+        type: 'debut',
+        priority: 'medium',
+        label: '冲刺出道',
+        desc: '距出道线仅一步之遥，再加把劲！',
+      })
+    }
+
+    if (trainee.fans > 0 && trainee.fatigue < 50 && trainee.stress < 50) {
+      suggestions.push({
+        type: 'pr',
+        priority: 'low',
+        label: '参与公关',
+        desc: '状态良好时可参与公关积累人气',
+      })
+    }
+  }
+
+  if (suggestions.length === 0) {
+    suggestions.push({ type: 'balanced', priority: 'low', label: '均衡发展', desc: '状态良好，可均衡提升各项能力' })
+  }
+
+  return suggestions.sort((a, b) => {
+    const priorityMap = { high: 0, medium: 1, low: 2 }
+    return priorityMap[a.priority] - priorityMap[b.priority]
+  })
 }
 
 export function getRatingResults(state) {

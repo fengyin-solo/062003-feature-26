@@ -10,6 +10,9 @@ import {
   calcProfit,
   calcTraineeScore,
   getRelationship,
+  getGrowthTrend,
+  getStressSources,
+  getTrainingSuggestions,
 } from '../utils/gameLogic'
 import { saveToSlot } from '../utils/storage'
 
@@ -134,5 +137,11 @@ export function useGame() {
     getRatingResults: () => (state.value ? getRatingResults(state.value) : []),
     calcTraineeScore,
     autoSave,
+    getGrowthTrend,
+    getStressSources: (trainee) => {
+      if (!state.value) return []
+      return getStressSources(trainee, state.value.relationships, state.value.trainees)
+    },
+    getTrainingSuggestions,
   }
 }
